@@ -1,0 +1,593 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leo's Chase - Storm Hunter</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: 'Inter', sans-serif; color: white; }
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .hud-text {
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        #story-panel {
+            pointer-events: auto;
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(5px);
+        }
+        .hidden { display: none !important; }
+        #damage-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: radial-gradient(circle, transparent 50%, rgba(255,0,0,0.5) 100%);
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        #cursor-hint {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.5);
+            padding: 10px 20px;
+            border-radius: 8px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 1s;
+        }
+    </style>
+</head>
+<body>
+
+
+<div id="game-container" class="w-full h-full"></div>
+
+
+<div id="damage-overlay"></div>
+<div id="cursor-hint">Click to capture cursor</div>
+
+
+<div id="ui-container" class="p-4">
+    <!-- Top HUD -->
+    <div id="hud-top" class="flex justify-between items-start transition-opacity duration-1000 opacity-0">
+        <div class="flex flex-col gap-2">
+            <div class="bg-black/50 p-3 rounded-lg border-l-4 border-blue-500">
+                <h2 class="text-sm text-blue-300 uppercase font-bold tracking-widest">Vehicle Status</h2>
+                <div class="text-2xl font-bold hud-text">INTEGRITY: <span id="health-val">100</span>%</div>
+            </div>
+            <div class="bg-black/50 p-3 rounded-lg border-l-4 border-purple-500">
+                <h2 class="text-sm text-purple-300 uppercase font-bold tracking-widest">Storm Class</h2>
+                <div id="storm-class" class="text-xl font-bold hud-text">SCANNING...</div>
+            </div>
+        </div>
+        <div class="flex flex-col items-end gap-2">
+            <div class="bg-black/50 p-3 rounded-lg border-r-4 border-red-500 text-right">
+                <h2 class="text-sm text-red-300 uppercase font-bold tracking-widest">Target Proximity</h2>
+                <div class="text-2xl font-bold hud-text"><span id="dist-val">---</span> M</div>
+            </div>
+            <div id="objective-panel" class="bg-yellow-900/50 p-2 rounded-lg border-r-4 border-yellow-500 text-right hidden">
+                <h2 class="text-xs text-yellow-300 uppercase font-bold">Current Objective</h2>
+                <div id="objective-text" class="text-sm font-semibold">Locate the storm.</div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Bottom HUD -->
+    <div id="hud-bottom" class="flex justify-center items-end mb-8 transition-opacity duration-1000 opacity-0">
+         <div id="deploy-meter" class="hidden flex flex-col items-center bg-black/60 p-4 rounded-xl border-t-4 border-green-500">
+            <div class="text-green-400 font-bold uppercase tracking-widest mb-2">Deployment Progress</div>
+            <div class="w-64 h-6 bg-gray-900 rounded-full overflow-hidden border-2 border-gray-700">
+                <div id="deploy-bar" class="h-full bg-gradient-to-r from-green-600 to-green-400 width-0" style="width: 0%"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<!-- Story/Menu Modal -->
+<div id="story-panel" class="absolute inset-0 flex items-center justify-center p-4">
+    <div class="max-w-2xl w-full bg-gray-900/90 border border-gray-700 p-8 rounded-2xl shadow-2xl text-center">
+        <h1 id="story-title" class="text-4xl md:text-6xl font-extrabold mb-6 text-transparent bg-clip-text bg-gradient-to-r from-gray-100 to-gray-500">
+            STORM CHASER: LEO
+        </h1>
+        <div id="story-content" class="text-lg md:text-xl text-gray-300 leading-relaxed mb-8 space-y-4">
+            <p>"My name is Leo. I've spent my whole life waiting for a storm like this."</p>
+            <p>"The radar shows a massive supercell forming just ten miles south. If I can get close enough to deploy the sensors, we might finally understand these monsters."</p>
+        </div>
+        <button id="action-btn" class="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-full text-xl transition-all transform hover:scale-105 focus:outline-none ring-4 ring-blue-500/30">
+            START ENGINE [SPACE]
+        </button>
+    </div>
+</div>
+
+
+<script>
+    // --- GAME STATE ---
+    const STATE = { MENU: 0, PLAYING: 1, GAME_OVER: 2, VICTORY: 3, STORY: 4 };
+    let currentState = STATE.MENU;
+    let currentStoryStage = 0;
+
+
+    // --- THREE.JS SETUP ---
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x556677, 0.0015);
+    scene.background = new THREE.Color(0x667788);
+
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 3000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.getElementById('game-container').appendChild(renderer.domElement);
+
+
+    // --- LIGHTING ---
+    const ambientLight = new THREE.AmbientLight(0x444455, 0.6);
+    scene.add(ambientLight);
+    const mainLight = new THREE.DirectionalLight(0xffeedd, 0.8);
+    mainLight.position.set(100, 200, -100);
+    mainLight.castShadow = true;
+    mainLight.shadow.camera.left = -500; mainLight.shadow.camera.right = 500;
+    mainLight.shadow.camera.top = 500; mainLight.shadow.camera.bottom = -500;
+    mainLight.shadow.mapSize.width = 2048; mainLight.shadow.mapSize.height = 2048;
+    scene.add(mainLight);
+    const lightningLight = new THREE.PointLight(0xaaddff, 0, 5000);
+    lightningLight.position.set(0, 1000, 0);
+    scene.add(lightningLight);
+
+
+    // --- ENVIRONMENT (CLOUDS & TREES) ---
+    // Clouds
+    const cloudGroup = new THREE.Group();
+    scene.add(cloudGroup);
+    const cloudGeo = new THREE.DodecahedronGeometry(300, 0);
+    const cloudMat = new THREE.MeshStandardMaterial({ color: 0x334455, transparent: true, opacity: 0.9, flatShading: true, roughness: 1 });
+    // Increased from 40 to 200 clouds for denser sky
+    for(let i=0; i<200; i++) {
+        const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+        // Wider spread (10000 instead of 8000) and slightly more height variation
+        cloud.position.set((Math.random()-0.5)*10000, 1200 + Math.random()*400, (Math.random()-0.5)*10000);
+        cloud.scale.set(1 + Math.random()*2, 0.3 + Math.random()*0.2, 1 + Math.random()*2);
+        cloud.rotation.y = Math.random() * Math.PI;
+        cloudGroup.add(cloud);
+    }
+
+
+    // --- GROUND ---
+    function getGroundHeight(x, z) { return Math.sin(x / 200) * 10 + Math.cos(z / 200) * 10; }
+    const groundGeo = new THREE.PlaneGeometry(10000, 10000, 128, 128);
+    const posAttribute = groundGeo.attributes.position;
+    for (let i = 0; i < posAttribute.count; i++) {
+        let x = posAttribute.getX(i); let y = posAttribute.getY(i);
+        posAttribute.setZ(i, getGroundHeight(x, y));
+    }
+    groundGeo.computeVertexNormals();
+    const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({ color: 0x2a3a2a, roughness: 0.9, metalness: 0.1, side: THREE.DoubleSide }));
+    ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
+    scene.add(ground);
+
+
+    // Trees
+    const treeObjects = []; // Store trees for render distance checking
+    const TREE_RENDER_DISTANCE_SQ = 1500 * 1500; // 1500m render distance (squared for fast check)
+
+
+    // TALLER TREES GEOMETRY
+    const trunkGeo = new THREE.CylinderGeometry(0.8, 1.2, 10, 8); // Much taller and slightly thicker trunk
+    const trunkMat = new THREE.MeshStandardMaterial({color: 0x221100, roughness: 1.0});
+    const leavesGeo = new THREE.ConeGeometry(8, 25, 8); // Much taller and wider leaves
+    const leavesMat = new THREE.MeshStandardMaterial({color: 0x1a331a, roughness: 0.9});
+
+
+    const mainTreeGroup = new THREE.Group();
+    scene.add(mainTreeGroup);
+
+
+    for(let i = 0; i < 400; i++) { // Increased count slightly as culling helps performance
+        const tx = (Math.random() - 0.5) * 6000;
+        const tz = (Math.random() - 0.5) * 6000;
+        if (Math.abs(tx) < 100 && tz > 900 && tz < 1100) continue; // Avoid spawn
+
+
+        const ty = getGroundHeight(tx, tz);
+        
+        const tree = new THREE.Group();
+        tree.position.set(tx, ty, tz);
+
+
+        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+        trunk.position.y = 5; // Half of height (10)
+        trunk.castShadow = true;
+        trunk.receiveShadow = true;
+        
+        const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+        leaves.position.y = 10 + 12.5 - 2; // Trunk top (10) + half leaves height (12.5) - overlap (2)
+        leaves.castShadow = true;
+        leaves.receiveShadow = true;
+        // Random slight lean
+        leaves.rotation.z = (Math.random() - 0.5) * 0.15;
+        leaves.rotation.x = (Math.random() - 0.5) * 0.15;
+
+
+        tree.add(trunk);
+        tree.add(leaves);
+        
+        // Random scale for variety
+        const scale = 0.8 + Math.random() * 0.6;
+        tree.scale.set(scale, scale, scale);
+
+
+        mainTreeGroup.add(tree);
+        treeObjects.push(tree);
+    }
+
+
+
+
+    // --- PLAYER (LEO'S TRUCK) ---
+    const carGroup = new THREE.Group();
+    const carBody = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.5, 4.5), new THREE.MeshStandardMaterial({ color: 0xaa2222, roughness: 0.5 }));
+    carBody.position.y = 1.2; carBody.castShadow = true; carGroup.add(carBody);
+    const carCabin = new THREE.Mesh(new THREE.BoxGeometry(2, 1.2, 2), new THREE.MeshStandardMaterial({ color: 0x881111, roughness: 0.5 }));
+    carCabin.position.set(0, 2.4, -0.5); carCabin.castShadow = true; carGroup.add(carCabin);
+    const lightGeo = new THREE.SphereGeometry(0.2, 16, 16); const lightMat = new THREE.MeshBasicMaterial({ color: 0xffffcc });
+    carGroup.add(new THREE.Mesh(lightGeo, lightMat).translateOnAxis(new THREE.Vector3(-0.8, 1.2, 2.3), 1));
+    carGroup.add(new THREE.Mesh(lightGeo, lightMat).translateOnAxis(new THREE.Vector3(0.8, 1.2, 2.3), 1));
+    const spotL = new THREE.SpotLight(0xffffcc, 5, 300, Math.PI/6, 0.5, 1);
+    spotL.position.set(0, 2, 1); spotL.target.position.set(0, 0, 20);
+    carGroup.add(spotL); carGroup.add(spotL.target);
+    scene.add(carGroup);
+
+
+    let speed = 0, maxSpeed = 1.2, acceleration = 0.02, friction = 0.98, maxSteering = 0.03, velocity = new THREE.Vector3();
+
+
+    // --- TORNADO SYSTEM ---
+    const tornadoGroup = new THREE.Group();
+    scene.add(tornadoGroup);
+    let tornadoMesh = null;
+
+
+    // Tornado Generation Configs
+    const F_SCALE = [
+        { name: "F0", speed: 0.2, radiusMult: 0.6, damageMult: 0.8, color: 0x99aabb, desc: "Gale Tornado" },
+        { name: "F1", speed: 0.3, radiusMult: 0.8, damageMult: 1.0, color: 0x778899, desc: "Moderate Tornado" },
+        { name: "F2", speed: 0.4, radiusMult: 1.0, damageMult: 1.2, color: 0x667788, desc: "Significant Tornado" },
+        { name: "F3", speed: 0.45, radiusMult: 1.3, damageMult: 1.5, color: 0x556677, desc: "Severe Tornado" },
+        { name: "F4", speed: 0.5, radiusMult: 1.6, damageMult: 2.0, color: 0x445566, desc: "Devastating Tornado" },
+        { name: "F5", speed: 0.6, radiusMult: 2.0, damageMult: 3.0, color: 0x223344, desc: "Incredible Tornado" }
+    ];
+    const T_TYPES = ["CONE", "WEDGE", "ROPE"];
+
+
+    let currentTornadoStats = {};
+
+
+    function generateTornado() {
+        if (tornadoMesh) tornadoGroup.remove(tornadoMesh);
+
+
+        const scaleIdx = Math.floor(Math.random() * F_SCALE.length); 
+        const typeIdx = Math.floor(Math.random() * T_TYPES.length);
+        const stats = F_SCALE[scaleIdx];
+        const type = T_TYPES[typeIdx];
+        currentTornadoStats = { ...stats, type };
+
+
+        const funnelPoints = [];
+        for (let i = 0; i <= 40; i++) {
+            const t = i / 40;
+            const y = t * 1000;
+            let x;
+            if (type === "ROPE") x = 5 + Math.pow(t, 4) * 200 + Math.sin(t * 10) * 20;
+            else if (type === "WEDGE") x = 100 + Math.pow(t, 1.5) * 500;
+            else x = 15 + Math.pow(t, 2.5) * 400;
+            x *= stats.radiusMult;
+            funnelPoints.push(new THREE.Vector2(x, y));
+        }
+
+
+        const funnelGeo = new THREE.LatheGeometry(funnelPoints, 32);
+        const funnelMat = new THREE.MeshStandardMaterial({
+            color: stats.color,
+            roughness: 0.6, metalness: 0.2, side: THREE.DoubleSide,
+            transparent: true, opacity: type === "ROPE" ? 0.7 : 0.95,
+            flatShading: false
+        });
+        tornadoMesh = new THREE.Mesh(funnelGeo, funnelMat);
+        tornadoGroup.add(tornadoMesh);
+        
+        document.getElementById('storm-class').textContent = `${stats.name} ${type}`;
+        document.getElementById('storm-class').className = `text-xl font-bold hud-text ${scaleIdx > 3 ? 'text-red-500' : 'text-white'}`;
+    }
+
+
+    // Debris
+    const debrisObjects = [];
+    const debrisGeo = new THREE.DodecahedronGeometry(4, 0);
+    const debrisMat = new THREE.MeshStandardMaterial({ color: 0x332222, flatShading: true });
+    for(let i=0; i<50; i++) {
+        const mesh = new THREE.Mesh(debrisGeo, debrisMat);
+        mesh.userData = {
+            rotSpeed: { x: Math.random()*0.2, y: Math.random()*0.2, z: Math.random()*0.2 },
+            orbitOffset: Math.random() * Math.PI * 2,
+            orbitSpeed: 0.01 + Math.random() * 0.02,
+            radius: 120 + Math.random() * 400,
+            height: Math.random() * 600
+        };
+        tornadoGroup.add(mesh); debrisObjects.push(mesh);
+    }
+
+
+    // --- GAMEPLAY ---
+    let playerHealth = 100;
+    let deployProgress = 0;
+    let distanceToTornado = 9999;
+    let tornadoWanderAngle = 0;
+    let isInvulnerable = false;
+
+
+    const STAGES = [
+        {
+            title: "PHASE 1: INTERCEPT",
+            getText: () => `Leo: "Visual confirmed. It's a ${currentTornadoStats.type} type, looks like an ${currentTornadoStats.name}. I need to get close. Watch out for debris!"`,
+            objective: "GET WITHIN 400 METERS",
+            check: () => distanceToTornado < 400
+        },
+        {
+            title: "PHASE 2: DEPLOYMENT",
+            getText: () => `Leo: "I'm in the bear's cage now! Winds are incredibly strong. Holding position to deploy sensors..."`,
+            objective: "HOLD POSITION (10s)", showMeter: true,
+            check: (dt) => {
+                if(distanceToTornado < 400 && distanceToTornado > 100) deployProgress += dt * 10;
+                else if (distanceToTornado > 450) deployProgress -= dt * 5;
+                deployProgress = Math.max(0, Math.min(100, deployProgress));
+                document.getElementById('deploy-bar').style.width = `${deployProgress}%`;
+                return deployProgress >= 100;
+            }
+        },
+        {
+            title: "PHASE 3: ESCAPE",
+            getText: () => `Leo: "Probe is away! It's shifting course directly at us! GET OUT OF HERE!"`,
+            objective: "ESCAPE TO 800 METERS",
+            check: () => distanceToTornado > 800
+        }
+    ];
+
+
+    // --- INPUT & POINTER LOCK ---
+    const keys = { w: false, a: false, s: false, d: false, space: false };
+    let isLocked = false;
+    let camYaw = Math.PI;
+    let camPitch = 0.3;
+
+
+    document.addEventListener('keydown', (e) => {
+        const k = e.key.toLowerCase();
+        if (['w','arrowup'].includes(k)) keys.w = true;
+        if (['s','arrowdown'].includes(k)) keys.s = true;
+        if (['a','arrowleft'].includes(k)) keys.a = true;
+        if (['d','arrowright'].includes(k)) keys.d = true;
+        if (e.code === 'Space') {
+             keys.space = true;
+             if ([STATE.MENU, STATE.GAME_OVER, STATE.VICTORY].includes(currentState)) startGame();
+             else if (currentState === STATE.STORY) advanceStory();
+        }
+    });
+    document.addEventListener('keyup', (e) => {
+        const k = e.key.toLowerCase();
+        if (['w','arrowup'].includes(k)) keys.w = false;
+        if (['s','arrowdown'].includes(k)) keys.s = false;
+        if (['a','arrowleft'].includes(k)) keys.a = false;
+        if (['d','arrowright'].includes(k)) keys.d = false;
+    });
+
+
+    renderer.domElement.addEventListener('click', () => {
+        if (currentState === STATE.PLAYING && !isLocked) renderer.domElement.requestPointerLock();
+    });
+    document.addEventListener('pointerlockchange', () => {
+        isLocked = (document.pointerLockElement === renderer.domElement);
+        document.getElementById('cursor-hint').style.opacity = (currentState === STATE.PLAYING && !isLocked) ? 1 : 0;
+    });
+    document.addEventListener('mousemove', (e) => {
+        if (isLocked && currentState === STATE.PLAYING) {
+            camYaw -= e.movementX * 0.002;
+            camPitch -= e.movementY * 0.002;
+            camPitch = Math.max(0.05, Math.min(Math.PI / 2 - 0.1, camPitch));
+        }
+    });
+    document.getElementById('action-btn').addEventListener('click', () => {
+        ([STATE.MENU, STATE.GAME_OVER, STATE.VICTORY].includes(currentState)) ? startGame() : advanceStory();
+    });
+
+
+    // --- MAIN FUNCTIONS ---
+    function startGame() {
+        playerHealth = 100;
+        document.getElementById('health-val').textContent = playerHealth;
+        deployProgress = 0;
+        currentStoryStage = -1;
+        speed = 0;
+        velocity.set(0,0,0);
+        carGroup.position.set(0, 0, 1000);
+        carGroup.rotation.set(0, Math.PI, 0);
+        tornadoGroup.position.set(0, 0, -1500);
+        camYaw = Math.PI; camPitch = 0.3;
+        generateTornado();
+        document.getElementById('hud-top').classList.remove('opacity-0');
+        document.getElementById('hud-bottom').classList.remove('opacity-0');
+        nextStoryStage();
+    }
+
+
+    function nextStoryStage() {
+        currentStoryStage++;
+        if (currentStoryStage >= STAGES.length) { endGame(true); return; }
+        currentState = STATE.STORY;
+        document.exitPointerLock();
+        const stage = STAGES[currentStoryStage];
+        document.getElementById('story-title').textContent = stage.title;
+        document.getElementById('story-content').textContent = stage.getText ? stage.getText() : stage.text;
+        document.getElementById('action-btn').textContent = "CONTINUE [SPACE]";
+        document.getElementById('story-panel').classList.remove('hidden');
+        document.getElementById('objective-panel').classList.remove('hidden');
+        document.getElementById('objective-text').textContent = stage.objective;
+        stage.showMeter ? document.getElementById('deploy-meter').classList.remove('hidden') : document.getElementById('deploy-meter').classList.add('hidden');
+    }
+
+
+    function advanceStory() {
+        document.getElementById('story-panel').classList.add('hidden');
+        currentState = STATE.PLAYING;
+        renderer.domElement.requestPointerLock();
+    }
+
+
+    function endGame(victory) {
+        currentState = victory ? STATE.VICTORY : STATE.GAME_OVER;
+        document.exitPointerLock();
+        document.getElementById('story-panel').classList.remove('hidden');
+        document.getElementById('story-title').textContent = victory ? "MISSION SUCCESS" : "CONNECTION LOST";
+        document.getElementById('story-title').className = victory ? "text-4xl md:text-6xl font-extrabold mb-6 text-green-500" : "text-4xl md:text-6xl font-extrabold mb-6 text-red-600";
+        document.getElementById('story-content').innerHTML = victory ? "<p>Leo: \"We did it! The data is streaming in. This is going to save lives.\"</p>" : "<p>[SIGNAL LOST] Vehicle unresponsive. Rescue teams dispatched.</p>";
+        document.getElementById('action-btn').textContent = "PLAY AGAIN";
+        document.getElementById('hud-top').classList.add('opacity-0');
+        document.getElementById('hud-bottom').classList.add('opacity-0');
+    }
+
+
+    function takeDamage(amount) {
+        if(isInvulnerable || currentState !== STATE.PLAYING) return;
+        playerHealth -= amount;
+        document.getElementById('health-val').textContent = Math.max(0, Math.ceil(playerHealth));
+        const overlay = document.getElementById('damage-overlay');
+        overlay.style.opacity = 0.8;
+        setTimeout(() => overlay.style.opacity = 0, 300);
+        if (playerHealth <= 0) endGame(false);
+        isInvulnerable = true;
+        setTimeout(() => isInvulnerable = false, 1000);
+    }
+
+
+    // --- ANIMATION LOOP ---
+    const clock = new THREE.Clock();
+    let lightningTimer = 0;
+    let frameCount = 0;
+
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const dt = clock.getDelta();
+        const time = clock.getElapsedTime();
+        frameCount++;
+
+
+        // RENDER DISTANCE CHECK (every 10 frames for performance)
+        if (frameCount % 10 === 0) {
+            for (let i = 0; i < treeObjects.length; i++) {
+                const tree = treeObjects[i];
+                // Fast squared distance check
+                const distSq = carGroup.position.distanceToSquared(tree.position);
+                tree.visible = (distSq < TREE_RENDER_DISTANCE_SQ);
+            }
+        }
+
+
+        if (currentState === STATE.PLAYING) {
+            if (keys.w) speed += acceleration;
+            if (keys.s) speed -= acceleration;
+            speed *= friction;
+            if (Math.abs(speed) > 0.01) {
+                const dir = speed > 0 ? 1 : -1;
+                carGroup.rotation.y += (keys.a ? 1 : keys.d ? -1 : 0) * maxSteering * Math.min(Math.abs(speed)/maxSpeed, 1) * dir;
+            }
+            velocity.set(0, 0, speed).applyAxisAngle(new THREE.Vector3(0,1,0), carGroup.rotation.y);
+            carGroup.position.add(velocity);
+            carGroup.position.y = getGroundHeight(carGroup.position.x, carGroup.position.z);
+
+
+            tornadoWanderAngle += (Math.random()-0.5) * dt * 0.5;
+            tornadoGroup.position.x += Math.cos(tornadoWanderAngle) * currentTornadoStats.speed * 60 * dt;
+            tornadoGroup.position.z += Math.sin(tornadoWanderAngle) * currentTornadoStats.speed * 60 * dt;
+            tornadoGroup.position.y = getGroundHeight(tornadoGroup.position.x, tornadoGroup.position.z);
+            if(tornadoMesh) tornadoMesh.rotation.y += (8 + currentTornadoStats.speed*5) * dt;
+
+
+            distanceToTornado = carGroup.position.distanceTo(tornadoGroup.position);
+            document.getElementById('dist-val').textContent = Math.round(distanceToTornado);
+            
+            if (distanceToTornado < 100 * currentTornadoStats.radiusMult) {
+                const pull = new THREE.Vector3().subVectors(tornadoGroup.position, carGroup.position).normalize();
+                carGroup.position.add(pull.multiplyScalar(dt * 60 * currentTornadoStats.radiusMult));
+                takeDamage(dt * 45 * currentTornadoStats.damageMult);
+            }
+            if (STAGES[currentStoryStage].check(dt)) nextStoryStage();
+        }
+
+
+        const camDist = 25;
+        const orbitAngle = carGroup.rotation.y + camYaw;
+        const targetCamPos = new THREE.Vector3(
+            carGroup.position.x + Math.sin(orbitAngle) * camDist * Math.cos(camPitch),
+            carGroup.position.y + camDist * Math.sin(camPitch) + 5,
+            carGroup.position.z + Math.cos(orbitAngle) * camDist * Math.cos(camPitch)
+        );
+        camera.position.lerp(targetCamPos, 0.2);
+        camera.lookAt(carGroup.position.x, carGroup.position.y + 4, carGroup.position.z);
+
+
+        debrisObjects.forEach(d => {
+            d.userData.orbitOffset += d.userData.orbitSpeed * dt;
+            d.position.set(
+                Math.cos(d.userData.orbitOffset) * d.userData.radius * currentTornadoStats.radiusMult,
+                d.userData.height + Math.sin(time * 2 + d.userData.orbitOffset) * 50,
+                Math.sin(d.userData.orbitOffset) * d.userData.radius * currentTornadoStats.radiusMult
+            );
+            d.rotation.x += d.userData.rotSpeed.x; d.rotation.y += d.userData.rotSpeed.y;
+            if (currentState === STATE.PLAYING) {
+                const wPos = new THREE.Vector3(); d.getWorldPosition(wPos);
+                if (wPos.distanceTo(carGroup.position) < 8) {
+                    takeDamage(25 * currentTornadoStats.damageMult);
+                    carGroup.position.add(new THREE.Vector3().subVectors(carGroup.position, wPos).normalize().multiplyScalar(5));
+                    speed *= -0.5;
+                }
+            }
+        });
+
+
+        lightningTimer -= dt;
+        if (lightningTimer <= 0) {
+            lightningLight.intensity = 5 + Math.random() * 5;
+            lightningLight.position.set(tornadoGroup.position.x + (Math.random()-0.5)*1000, 1000, tornadoGroup.position.z + (Math.random()-0.5)*1000);
+            setTimeout(() => lightningLight.intensity = 0, 100);
+            lightningTimer = Math.random() * 5 + 1;
+        }
+        renderer.render(scene, camera);
+    }
+
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth/window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+    animate();
+</script>
+</body>
+</html>
